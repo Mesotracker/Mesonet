@@ -1,0 +1,6 @@
+{
+  "name": "MesoMax RiskSim — Mesoscale Weather Risk Simulator",
+  "description": "Advanced mesoscale convective analysis and severe-weather risk simulation engine with interactive Skew-T, hodograph, Open-Meteo & SharpPy sounding ingestion, SPC categorical modeling, and multi-tier hazard export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
