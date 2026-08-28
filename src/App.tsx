@@ -46,7 +46,27 @@ import {
 
 export default function App() {
   // 1. Initial State with Built-in KPIT Severe Sounding
-  const initialSounding = useMemo(() => parseSharpPySounding(SAMPLE_KPIT_TEXT, 'KPIT 260322/1900'), []);
+  const initialSounding: SoundingData = useMemo(() => {
+    try {
+      return parseSharpPySounding(SAMPLE_KPIT_TEXT, 'KPIT 260322/1900');
+    } catch (e) {
+      console.error('Failed to parse initial sounding:', e);
+      return {
+        id: 'fallback-kpit',
+        name: 'KPIT 260322/1900',
+        title: 'KPIT 260322/1900',
+        source: 'sharppy',
+        type: 2,
+        levels: [
+          { p: 1000, h: 200, t: 25, td: 18, wd: 210, ws: 15 },
+          { p: 850, h: 1500, t: 16, td: 10, wd: 240, ws: 35 },
+          { p: 700, h: 3000, t: 6, td: -5, wd: 260, ws: 50 },
+          { p: 500, h: 5600, t: -14, td: -25, wd: 270, ws: 65 },
+          { p: 300, h: 9200, t: -38, td: -50, wd: 280, ws: 80 }
+        ]
+      };
+    }
+  }, []);
   const [soundings, setSoundings] = useState<SoundingData[]>([initialSounding]);
   const [activeSoundingId, setActiveSoundingId] = useState<string>(initialSounding.id);
   const [forecastSteps, setForecastSteps] = useState<HourlyForecastStep[]>([]);
@@ -70,8 +90,12 @@ export default function App() {
 
   // Active Sounding
   const activeSounding = useMemo(() => {
-    return soundings.find((s) => s.id === activeSoundingId) || soundings[0];
-  }, [soundings, activeSoundingId]);
+    if (soundings && soundings.length > 0) {
+      return soundings.find((s) => s.id === activeSoundingId) || soundings[0];
+    }
+    return initialSounding;
+  }, [soundings, activeSoundingId, initialSounding]);
+
 
   // Derived Indices from Physical Sounding Levels + Tuning Constants
   const indices: SoundingIndices = useMemo(() => {
@@ -378,7 +402,7 @@ export default function App() {
                     SKW: 100-1000mb
                   </div>
                   <div className="bg-black/60 backdrop-blur-md px-3 py-1 rounded text-[10px] font-mono border border-slate-700 text-orange-400">
-                    ACTIVE: {activeSounding.source === 'open-meteo' ? 'TYPE-1 (OPEN-METEO)' : 'TYPE-2 (OBSERVED)'}
+                    ACTIVE: {activeSounding?.source === 'open-meteo' ? 'TYPE-1 (OPEN-METEO)' : 'TYPE-2 (OBSERVED)'}
                   </div>
                 </div>
 
@@ -407,7 +431,7 @@ export default function App() {
                     <span className="text-[10px] font-mono text-slate-500">1050 to 100 hPa · 35° Isotherms</span>
                   </div>
                   <SkewTCanvas
-                    levels={activeSounding.levels}
+                    levels={activeSounding?.levels || []}
                     tuning={tuning}
                     isEditorMode={isEditorMode}
                     onLevelsChanged={handleLevelsChanged}
@@ -422,7 +446,7 @@ export default function App() {
                     <span className="text-[10px] font-mono text-slate-500">0 to 120 kt Range · 0–12 km AGL</span>
                   </div>
                   <HodographCanvas
-                    levels={activeSounding.levels}
+                    levels={activeSounding?.levels || []}
                     isEditorMode={isEditorMode}
                     onLevelsChanged={handleLevelsChanged}
                   />
@@ -431,7 +455,7 @@ export default function App() {
 
               {/* Visualizer Location & Coordinates Strip */}
               <div className="mt-4 pt-3 border-t border-slate-800/80 flex flex-wrap justify-between items-center text-[10px] font-mono text-slate-500">
-                <span>{activeSounding.title || 'Sounding Profile Coordinates'}</span>
+                <span>{activeSounding?.title || 'Sounding Profile Coordinates'}</span>
                 <span className="text-slate-400">Click & Drag to Pan / Zoom · Double Click to Reset</span>
               </div>
             </div>
@@ -455,7 +479,7 @@ export default function App() {
         )}
 
         {/* PAGE 2: HAZARDS VIEW */}
-        {activePage === 'hazards' && (
+        {activePage === 'hazards' && activeSounding && (
           <HazardsView
             assessment={assessment}
             activeSounding={activeSounding}
@@ -467,7 +491,7 @@ export default function App() {
         )}
 
         {/* PAGE 3: RISK SIMULATION & ANALYSIS */}
-        {activePage === 'analysis' && (
+        {activePage === 'analysis' && activeSounding && (
           <AnalysisView
             assessment={assessment}
             activeSounding={activeSounding}
@@ -477,7 +501,7 @@ export default function App() {
         )}
 
         {/* PAGE 4: EXPORT */}
-        {activePage === 'export' && (
+        {activePage === 'export' && activeSounding && (
           <ExportView
             sounding={activeSounding}
             assessment={assessment}

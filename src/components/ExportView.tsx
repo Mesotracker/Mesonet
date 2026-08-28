@@ -418,14 +418,14 @@ export const ExportView: React.FC<ExportViewProps> = ({
         </div>
 
         {/* API URL Box if Open-Meteo */}
-        {sounding.sourceUrl && (
+        {sounding.apiUrl && (
           <div className="mt-4 p-3 bg-black/30 border border-slate-800 rounded-lg flex items-center justify-between gap-3">
             <div className="truncate text-xs font-mono text-slate-400">
               <strong className="text-orange-400 uppercase mr-2">Open-Meteo API Query URL:</strong>
-              <span className="text-slate-300">{sounding.sourceUrl}</span>
+              <span className="text-slate-300">{sounding.apiUrl}</span>
             </div>
             <button
-              onClick={() => handleCopyText(sounding.sourceUrl || '', 'url')}
+              onClick={() => handleCopyText(sounding.apiUrl || '', 'url')}
               className="px-3 py-1 bg-black/40 hover:bg-orange-500 hover:text-black text-orange-400 font-mono text-xs font-bold rounded transition shrink-0 flex items-center gap-1 border border-slate-800"
             >
               {copiedType === 'url' ? <Check className="w-3 h-3 text-emerald-400" /> : <Copy className="w-3 h-3" />}
