@@ -203,19 +203,34 @@ export const HodographCanvas: React.FC<HodographCanvasProps> = ({
   }, [renderHodograph]);
 
   useEffect(() => {
-    const handleResize = () => {
+    const updateDimensions = () => {
       if (containerRef.current && canvasRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
-        const size = Math.floor(Math.min(rect.width, 1000));
-        canvasRef.current.width = size;
-        canvasRef.current.height = size;
+        const clientWidth = rect.width > 0 ? rect.width : 500;
+        const size = Math.max(300, Math.floor(Math.min(clientWidth, 1000)));
+        if (canvasRef.current.width !== size || canvasRef.current.height !== size) {
+          canvasRef.current.width = size;
+          canvasRef.current.height = size;
+        }
         renderHodograph();
       }
     };
 
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    updateDimensions();
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (containerRef.current && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        updateDimensions();
+      });
+      resizeObserver.observe(containerRef.current);
+    }
+
+    window.addEventListener('resize', updateDimensions);
+    return () => {
+      if (resizeObserver) resizeObserver.disconnect();
+      window.removeEventListener('resize', updateDimensions);
+    };
   }, [renderHodograph]);
 
   const getCanvasMousePos = (e: React.MouseEvent | React.TouchEvent) => {

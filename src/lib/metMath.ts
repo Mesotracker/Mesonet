@@ -72,18 +72,20 @@ export function calcThetaE(tempC: number, dewC: number, p: number): number {
 }
 
 /**
- * Moist adiabatic lapse rate in °C/m (or K/m) at temperature T (°C) and pressure P (hPa)
+ * Moist adiabatic lapse rate in K/m (or °C/m) at temperature T (°C) and pressure P (hPa)
+ * Formula: Gamma_m = g * (1 + (Lv * rs) / (Rd * Tk)) / (Cp + (Lv^2 * rs * EPSILON) / (Rd * Tk^2))
+ * Note: Returns rate in K/m (e.g. 0.0045 to 0.0075 K/m, which equals 4.5 to 7.5 °C/km)
  */
 export function calcMoistAdiabaticLapseRate(tempC: number, p: number, tuning?: LapseRateTuning): number {
-  const tk = tempC + 273.15;
+  const tk = Math.max(180, tempC + 273.15);
   const es = calcVaporPressure(tempC);
-  const rs = calcMixingRatio(es, p); // kg/kg
+  const rs = calcMixingRatio(es, p); // in kg/kg
   
   const num = 1.0 + (Lv * rs) / (Rd * tk);
   const den = Cp + (Math.pow(Lv, 2) * rs * EPSILON) / (Rd * Math.pow(tk, 2));
   const standardRate = (num / den) * g; // in K/m
   
-  const factor = tuning ? tuning.moistLapseFactor : 1.0;
+  const factor = tuning?.moistLapseFactor !== undefined ? tuning.moistLapseFactor : 1.0;
   return standardRate * factor;
 }
 
@@ -99,10 +101,63 @@ export function calcLCL(tempC: number, dewC: number, pSfc: number): { lclHeightM
   // Height approx: ~125 m per °C dewpoint depression at sfc
   const lclHeightM = Math.max(0, (tempC - lclTempC) * 125.0);
   
-  // Pressure at LCL via Poisson
+  // Pressure at LCL via Poisson dry adiabatic expansion
   const lclPressureHpa = pSfc * Math.pow(tlclK / tk, Cp / Rd);
   
   return { lclHeightM, lclPressureHpa, lclTempC };
+}
+
+/**
+ * Interpolate atmospheric variables at a given pressure level (hPa)
+ */
+export function interpolatePressure(levels: SoundingLevel[], targetP: number): { p: number; h: number; t: number; td: number; wd: number; ws: number; u: number; v: number } {
+  if (levels.length === 0) {
+    return { p: targetP, h: 1000, t: 20, td: 10, wd: 180, ws: 10, u: 0, v: 10 };
+  }
+
+  // Exact match
+  const exact = levels.find((l) => Math.abs(l.p - targetP) < 0.1);
+  if (exact) {
+    const uv = windToUV(exact.ws, exact.wd);
+    return { ...exact, u: uv.u, v: uv.v };
+  }
+
+  // Out of bounds - lower than bottom level (highest pressure)
+  if (targetP >= levels[0].p) {
+    const l0 = levels[0];
+    const uv = windToUV(l0.ws, l0.wd);
+    return { ...l0, p: targetP, u: uv.u, v: uv.v };
+  }
+
+  // Out of bounds - higher than top level (lowest pressure)
+  const last = levels[levels.length - 1];
+  if (targetP <= last.p) {
+    const uv = windToUV(last.ws, last.wd);
+    return { ...last, p: targetP, u: uv.u, v: uv.v };
+  }
+
+  for (let i = 0; i < levels.length - 1; i++) {
+    const lA = levels[i];
+    const lB = levels[i + 1];
+    // In descending pressure order (lA.p >= targetP >= lB.p)
+    if (targetP <= lA.p && targetP >= lB.p) {
+      const frac = (lA.p - targetP) / Math.max(0.01, lA.p - lB.p);
+      const h = lA.h + (lB.h - lA.h) * frac;
+      const t = lA.t + (lB.t - lA.t) * frac;
+      const td = lA.td + (lB.td - lA.td) * frac;
+
+      const uvA = windToUV(lA.ws, lA.wd);
+      const uvB = windToUV(lB.ws, lB.wd);
+      const u = uvA.u + (uvB.u - uvA.u) * frac;
+      const v = uvA.v + (uvB.v - uvA.v) * frac;
+      const wind = uvToWind(u, v);
+
+      return { p: targetP, h: Math.round(h), t, td, wd: wind.wd, ws: wind.ws, u, v };
+    }
+  }
+
+  const uv = windToUV(levels[0].ws, levels[0].wd);
+  return { ...levels[0], p: targetP, u: uv.u, v: uv.v };
 }
 
 /**
@@ -314,25 +369,36 @@ export function computeSoundingThermodynamics(
   const sfc = levels[0];
   const sfcP = sfc.p;
 
-  // Mixed Layer (lowest 100 hPa)
-  let mlT_sum = 0, mlTd_sum = 0, mlCount = 0;
+  // Mixed Layer (lowest 100 hPa layer) - standard meteorology average theta and mixing ratio
+  let sumTheta = 0;
+  let sumMixRatio = 0;
+  let mlCount = 0;
   for (const l of levels) {
     if (l.p >= sfcP - 100) {
-      mlT_sum += l.t;
-      mlTd_sum += l.td;
+      const theta = calcThetaK(l.t, l.p);
+      const vp = calcVaporPressure(l.td);
+      const w = calcMixingRatio(vp, l.p);
+      sumTheta += theta;
+      sumMixRatio += w;
       mlCount++;
     }
   }
-  const mlT = mlCount > 0 ? mlT_sum / mlCount : sfc.t;
-  const mlTd = mlCount > 0 ? mlTd_sum / mlCount : sfc.td;
+  const meanTheta = mlCount > 0 ? sumTheta / mlCount : calcThetaK(sfc.t, sfc.p);
+  const meanMixRatio = mlCount > 0 ? sumMixRatio / mlCount : calcMixingRatio(calcVaporPressure(sfc.td), sfc.p);
+
+  // Surface parcel equivalent for Mixed Layer
+  const mlT = meanTheta * Math.pow(sfc.p / 1000.0, Rd / Cp) - 273.15;
+  const mlVaporP = (sfc.p * meanMixRatio) / (EPSILON + meanMixRatio);
+  const mlTd = calcDewpoint(mlVaporP);
 
   // LCL Calculations
   const sbLcl = calcLCL(sfc.t, sfc.td, sfc.p);
   const mlLcl = calcLCL(mlT, mlTd, sfc.p);
 
-  // Function to integrate a parcel from an initial (T, Td, P_sfc)
-  function integrateParcel(initT: number, initTd: number, initP: number) {
+  // Function to integrate a parcel from an initial (T, Td, P_sfc, Z_start)
+  function integrateParcel(initT: number, initTd: number, initP: number, initZ = 0) {
     const lcl = calcLCL(initT, initTd, initP);
+    const lclZ_AGL = initZ + lcl.lclHeightM;
     let parcelT = initT;
     let cape = 0;
     let cape3km = 0;
@@ -342,23 +408,28 @@ export function computeSoundingThermodynamics(
     let hasPositiveBuoyancyStarted = false;
 
     const maxZ = Math.min(18000, levels[levels.length - 1].h - sfc.h);
-    const dz = 40; // 40m integration steps
+    const dz = 25; // 25m fine integration steps for precision
 
-    for (let z = 0; z <= maxZ; z += dz) {
+    // Initial mixing ratio (constant below LCL)
+    const initVaporP = calcVaporPressure(initTd);
+    const initMixRatio = calcMixingRatio(initVaporP, initP);
+
+    for (let z = initZ; z <= maxZ; z += dz) {
       const env = interpolateSounding(levels, z);
 
       // Parcel temperature ascent
-      if (z <= lcl.lclHeightM) {
-        // Dry adiabatic ascent
-        parcelT -= (tuning.dryLapseRate / 1000.0) * dz;
+      if (z < lclZ_AGL) {
+        // Dry adiabatic ascent: Gamma_d in K/m = tuning.dryLapseRate / 1000.0 (e.g. 9.8 / 1000 = 0.0098)
+        const dryRate_per_m = (tuning.dryLapseRate || 9.8) / 1000.0;
+        parcelT -= dryRate_per_m * dz;
       } else {
-        // Moist pseudo-adiabatic ascent with tuning factor
-        const moistLapse = calcMoistAdiabaticLapseRate(parcelT, env.p, tuning);
-        parcelT -= (moistLapse / 1000.0) * dz;
+        // Moist pseudo-adiabatic ascent: Gamma_m is already in K/m
+        const moistLapse_per_m = calcMoistAdiabaticLapseRate(parcelT, env.p, tuning);
+        parcelT -= moistLapse_per_m * dz;
       }
 
       // Optional entrainment penalty
-      if (tuning.entrainmentRate > 0 && z > lcl.lclHeightM) {
+      if (tuning.entrainmentRate > 0 && z > lclZ_AGL) {
         const entrainFrac = (tuning.entrainmentRate / 100000.0) * dz;
         parcelT -= entrainFrac * (parcelT - env.t);
       }
@@ -366,29 +437,34 @@ export function computeSoundingThermodynamics(
       // Virtual temperature correction for buoyancy
       const envVaporP = calcVaporPressure(env.td);
       const envMixRatio = calcMixingRatio(envVaporP, env.p);
-      const envTvK = calcVirtualTempK(env.t, envMixRatio, tuning.virtualTempFactor);
+      const envTvK = calcVirtualTempK(env.t, envMixRatio, tuning.virtualTempFactor ?? 0.61);
 
-      // Parcel vapor pressure
-      const parcelVaporP = z < lcl.lclHeightM ? calcVaporPressure(initTd) : calcVaporPressure(parcelT);
-      const parcelMixRatio = calcMixingRatio(parcelVaporP, env.p);
-      const parcelTvK = calcVirtualTempK(parcelT, parcelMixRatio, tuning.virtualTempFactor);
+      // Parcel mixing ratio: constant below LCL, saturated above LCL
+      let parcelMixRatio = initMixRatio;
+      if (z >= lclZ_AGL) {
+        const parcelSatVaporP = calcVaporPressure(parcelT);
+        parcelMixRatio = calcMixingRatio(parcelSatVaporP, env.p);
+      }
+      const parcelTvK = calcVirtualTempK(parcelT, parcelMixRatio, tuning.virtualTempFactor ?? 0.61);
 
-      // Buoyancy acceleration
+      // Buoyancy acceleration: B = g * (Tv_parcel - Tv_env) / Tv_env
       const buoy = g * ((parcelTvK - envTvK) / envTvK);
 
       if (buoy > 0) {
-        if (!hasPositiveBuoyancyStarted) {
+        if (!hasPositiveBuoyancyStarted && z >= lclZ_AGL) {
           hasPositiveBuoyancyStarted = true;
           lfcM = z;
         }
-        const dCAPE = buoy * dz;
-        cape += dCAPE;
-        if (z <= 3000) {
-          cape3km += dCAPE;
+        if (hasPositiveBuoyancyStarted) {
+          const dCAPE = buoy * dz;
+          cape += dCAPE;
+          if (z <= 3000) {
+            cape3km += dCAPE;
+          }
+          elM = z; // Updates until parcel ceases to be buoyant
         }
-        elM = z; // keeps updating until buoy becomes negative
       } else {
-        if (!hasPositiveBuoyancyStarted && z <= 4000) {
+        if (!hasPositiveBuoyancyStarted && z <= 4500) {
           cin += buoy * dz;
         }
       }
@@ -398,29 +474,26 @@ export function computeSoundingThermodynamics(
       cape: Math.max(0, cape),
       cape3km: Math.max(0, cape3km),
       cin: Math.min(0, Math.max(-1000, cin)),
-      lfc: lfcM > 0 ? lfcM : lcl.lclHeightM + 300,
-      el: elM > 0 ? elM : 10000
+      lfc: lfcM > 0 ? lfcM : lcl.lclHeightM + 250,
+      el: elM > 0 ? elM : 10500
     };
   }
 
-  const sbResults = integrateParcel(sfc.t, sfc.td, sfc.p);
-  const mlResults = integrateParcel(mlT, mlTd, sfc.p);
+  const sbResults = integrateParcel(sfc.t, sfc.td, sfc.p, 0);
+  const mlResults = integrateParcel(mlT, mlTd, sfc.p, 0);
 
-  // Most Unstable Parcel (highest Theta-e in lowest 300 hPa)
-  let maxThetaE = -999;
-  let muT = sfc.t, muTd = sfc.td, muP = sfc.p;
+  // Most Unstable Parcel (highest CAPE in lowest 300 hPa)
+  let maxMuCape = -1;
+  let muResults = sbResults;
   for (const l of levels) {
     if (l.p >= sfcP - 300) {
-      const thE = calcThetaE(l.t, l.td, l.p);
-      if (thE > maxThetaE) {
-        maxThetaE = thE;
-        muT = l.t;
-        muTd = l.td;
-        muP = l.p;
+      const res = integrateParcel(l.t, l.td, l.p, Math.max(0, l.h - sfc.h));
+      if (res.cape > maxMuCape) {
+        maxMuCape = res.cape;
+        muResults = res;
       }
     }
   }
-  const muResults = integrateParcel(muT, muTd, muP);
 
   // Downdraft CAPE (DCAPE): parcel with minimum Theta-E between 700 and 500 hPa brought moist adiabatically to sfc
   let minThetaE = 9999;
@@ -439,11 +512,11 @@ export function computeSoundingThermodynamics(
   if (minThE_level) {
     let dParcelT = minThE_level.t;
     const startZ = minThE_level.h - sfc.h;
-    const dz = 40;
+    const dz = 25;
     for (let z = startZ; z >= 0; z -= dz) {
       const env = interpolateSounding(levels, z);
-      const moistLapse = calcMoistAdiabaticLapseRate(dParcelT, env.p, tuning);
-      dParcelT += (moistLapse / 1000.0) * dz; // warms moist adiabatically on descent
+      const moistLapse_per_m = calcMoistAdiabaticLapseRate(dParcelT, env.p, tuning);
+      dParcelT += moistLapse_per_m * dz; // warms moist adiabatically on descent
 
       const envTvK = env.t + 273.15;
       const dParcelTvK = dParcelT + 273.15;
@@ -455,26 +528,27 @@ export function computeSoundingThermodynamics(
   }
   dcape = Math.max(0, Math.min(2500, dcape));
 
-  // Key Pressure Level Temperatures & Lapse Rates
-  let t500 = -12, t700 = 4, t850 = 14;
-  let h500 = 5600, h700 = 3100, h850 = 1500;
-  for (const l of levels) {
-    if (Math.abs(l.p - 500) < 30) { t500 = l.t; h500 = l.h; }
-    if (Math.abs(l.p - 700) < 30) { t700 = l.t; h700 = l.h; }
-    if (Math.abs(l.p - 850) < 30) { t850 = l.t; h850 = l.h; }
-  }
+  // Key Pressure Level Temperatures & Lapse Rates (Precision Interpolated)
+  const p500 = interpolatePressure(levels, 500);
+  const p700 = interpolatePressure(levels, 700);
+  const p850 = interpolatePressure(levels, 850);
 
-  const lapse_700_500 = (h500 > h700)
-    ? Math.max(3.5, Math.min(10.5, ((t700 - t500) / ((h500 - h700) / 1000.0)) * tuning.midLevelWeight))
-    : 6.5;
+  const dz_700_500_km = Math.max(0.5, (p500.h - p700.h) / 1000.0);
+  const dz_850_500_km = Math.max(1.0, (p500.h - p850.h) / 1000.0);
 
-  const lapse_850_500 = (h500 > h850)
-    ? Math.max(3.5, Math.min(10.5, (t850 - t500) / ((h500 - h850) / 1000.0)))
-    : 6.5;
+  const lapse_700_500 = Math.max(
+    3.0,
+    Math.min(11.5, ((p700.t - p500.t) / dz_700_500_km) * (tuning.midLevelWeight ?? 1.0))
+  );
+
+  const lapse_850_500 = Math.max(
+    3.0,
+    Math.min(11.5, (p850.t - p500.t) / dz_850_500_km)
+  );
 
   const sfcLevel = levels[0];
   const z3k = interpolateSounding(levels, 3000);
-  const lapse_0_3km = Math.max(3.0, Math.min(11.0, (sfcLevel.t - z3k.t) / 3.0));
+  const lapse_0_3km = Math.max(3.0, Math.min(11.5, (sfcLevel.t - z3k.t) / 3.0));
 
   const elHeightM = sbResults.el;
   const elFt = Math.round(elHeightM * 3.28084);
@@ -496,9 +570,9 @@ export function computeSoundingThermodynamics(
     lapse_700_500: Math.round(lapse_700_500 * 10) / 10,
     lapse_850_500: Math.round(lapse_850_500 * 10) / 10,
     lapse_0_3km: Math.round(lapse_0_3km * 10) / 10,
-    t500_c: Math.round(t500 * 10) / 10,
-    t700_c: Math.round(t700 * 10) / 10,
-    t850_c: Math.round(t850 * 10) / 10
+    t500_c: Math.round(p500.t * 10) / 10,
+    t700_c: Math.round(p700.t * 10) / 10,
+    t850_c: Math.round(p850.t * 10) / 10
   };
 }
 

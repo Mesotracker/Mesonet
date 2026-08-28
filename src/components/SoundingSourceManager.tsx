@@ -4,6 +4,7 @@ import {
   buildOpenMeteoUrl,
   parseOpenMeteoResponse,
   parseSharpPySounding,
+  parseJsonSounding,
   SAMPLE_KPIT_TEXT,
   SAMPLE_PLAINS_SUPERCELL,
   SAMPLE_PROGRESSIVE_DERECHO
@@ -18,7 +19,10 @@ import {
   AlertCircle,
   Clock,
   Layers,
-  ChevronDown
+  ChevronDown,
+  Code2,
+  Copy,
+  Check
 } from 'lucide-react';
 
 interface SoundingSourceManagerProps {
@@ -40,11 +44,13 @@ export const SoundingSourceManager: React.FC<SoundingSourceManagerProps> = ({
   isLoading,
   setIsLoading
 }) => {
-  const [activeTab, setActiveTab] = useState<'coordinates' | 'upload' | 'presets'>('coordinates');
+  const [activeTab, setActiveTab] = useState<'coordinates' | 'upload' | 'json' | 'presets'>('coordinates');
   const [lat, setLat] = useState<number>(40.0);
   const [lon, setLon] = useState<number>(-80.0);
   const [forecastDays, setForecastDays] = useState<number>(1);
   const [rawTextInput, setRawTextInput] = useState<string>('');
+  const [rawJsonInput, setRawJsonInput] = useState<string>('');
+  const [jsonCopied, setJsonCopied] = useState<boolean>(false);
   const [statusMsg, setStatusMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   const presetLocations = [
@@ -106,19 +112,61 @@ export const SoundingSourceManager: React.FC<SoundingSourceManagerProps> = ({
     }
   };
 
-  // Handle File Upload (.txt / .csv)
+  // Parse Ingested JSON Sounding
+  const handleParseJson = (jsonToParse: string, title?: string) => {
+    try {
+      const parsed = parseJsonSounding(jsonToParse, title);
+      onSoundingsAdded([parsed]);
+      onSelectActiveSounding(parsed.id);
+      setStatusMsg({
+        type: 'success',
+        text: `Successfully imported JSON sounding "${parsed.title}" (${parsed.levels.length} vertical levels). Selected as Active Sounding.`
+      });
+      setRawJsonInput('');
+    } catch (err: any) {
+      setStatusMsg({
+        type: 'error',
+        text: `Error parsing JSON sounding: ${err.message || err}`
+      });
+    }
+  };
+
+  // Handle File Upload (.txt / .csv / .json)
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (event) => {
       const content = event.target?.result as string;
-      handleParseSharpPy(content, file.name);
+      if (file.name.endsWith('.json') || content.trim().startsWith('{') || content.trim().startsWith('[')) {
+        handleParseJson(content, file.name);
+      } else {
+        handleParseSharpPy(content, file.name);
+      }
     };
     reader.readAsText(file);
   };
 
   const activeSounding = soundings.find((s) => s.id === activeSoundingId) || soundings[0];
+
+  const handleCopyCurrentJson = () => {
+    if (!activeSounding) return;
+    const exportPayload = {
+      sounding: {
+        id: activeSounding.id,
+        name: activeSounding.name,
+        title: activeSounding.title,
+        lat: activeSounding.lat,
+        lon: activeSounding.lon,
+        timestamp: activeSounding.timestamp,
+        levels: activeSounding.levels
+      },
+      indices: activeSounding.indices
+    };
+    navigator.clipboard.writeText(JSON.stringify(exportPayload, null, 2));
+    setJsonCopied(true);
+    setTimeout(() => setJsonCopied(false), 2000);
+  };
 
   return (
     <div className="w-full bg-[#141820] border border-slate-800 rounded-xl p-4 sm:p-5 shadow-lg">
@@ -135,7 +183,7 @@ export const SoundingSourceManager: React.FC<SoundingSourceManagerProps> = ({
                   Active / Primary Sounding
                 </span>
                 <span className="text-xs font-mono text-orange-400 font-bold">
-                  {activeSounding.type === 2 ? 'Type 2 (SharpPy Text)' : 'Type 1 (Open-Meteo GFS)'}
+                  {activeSounding.type === 2 ? 'Type 2 (Custom / Observed)' : 'Type 1 (Open-Meteo GFS)'}
                 </span>
               </div>
               <h3 className="text-base font-bold font-mono text-white mt-1">
@@ -180,7 +228,7 @@ export const SoundingSourceManager: React.FC<SoundingSourceManagerProps> = ({
           }`}
         >
           <CloudDownload className="w-3.5 h-3.5" />
-          <span>Type 1: Open-Meteo Coordinates</span>
+          <span>Type 1: Open-Meteo</span>
         </button>
         <button
           id="tab-upload"
@@ -192,7 +240,19 @@ export const SoundingSourceManager: React.FC<SoundingSourceManagerProps> = ({
           }`}
         >
           <Upload className="w-3.5 h-3.5" />
-          <span>Type 2: Upload / Paste SharpPy</span>
+          <span>Type 2: SharpPy Text</span>
+        </button>
+        <button
+          id="tab-json"
+          onClick={() => setActiveTab('json')}
+          className={`px-3 sm:px-4 py-1.5 rounded-md text-xs font-medium uppercase transition-colors flex items-center gap-2 ${
+            activeTab === 'json'
+              ? 'bg-slate-700 text-white shadow-sm'
+              : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+          }`}
+        >
+          <Code2 className="w-3.5 h-3.5" />
+          <span>JSON Import & Export</span>
         </button>
         <button
           id="tab-presets"
@@ -204,7 +264,7 @@ export const SoundingSourceManager: React.FC<SoundingSourceManagerProps> = ({
           }`}
         >
           <Layers className="w-3.5 h-3.5" />
-          <span>Preloaded Sounding Library</span>
+          <span>Preloaded Library</span>
         </button>
       </div>
 
@@ -292,11 +352,11 @@ export const SoundingSourceManager: React.FC<SoundingSourceManagerProps> = ({
         <div className="space-y-4">
           <div className="bg-black/30 p-3 rounded-lg border border-slate-800">
             <label className="block text-xs font-mono font-bold uppercase text-slate-400 mb-1">
-              Upload Sounding File (.txt / .csv)
+              Upload Sounding File (.txt / .csv / .json)
             </label>
             <input
               type="file"
-              accept=".txt,.csv"
+              accept=".txt,.csv,.json"
               onChange={handleFileUpload}
               className="w-full text-xs font-mono text-slate-400 file:mr-4 file:py-1.5 file:px-3 file:rounded-lg file:border-0 file:text-xs file:font-mono file:font-bold file:bg-orange-500 file:text-black hover:file:bg-orange-400 cursor-pointer"
             />
@@ -328,7 +388,79 @@ export const SoundingSourceManager: React.FC<SoundingSourceManagerProps> = ({
         </div>
       )}
 
-      {/* Tab 3: Preloaded Real-World Benchmark Soundings */}
+      {/* Tab 3: JSON Import & Export */}
+      {activeTab === 'json' && (
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-2 p-3 bg-black/30 border border-slate-800 rounded-lg">
+            <div className="flex items-center gap-2">
+              <Code2 className="w-4 h-4 text-orange-400" />
+              <span className="text-xs font-mono font-bold uppercase text-white">
+                Active Sounding JSON Export
+              </span>
+            </div>
+            <button
+              onClick={handleCopyCurrentJson}
+              className="px-3 py-1.5 bg-orange-500 hover:bg-orange-400 text-black text-xs font-mono font-bold rounded-lg flex items-center gap-1.5 transition shadow"
+            >
+              {jsonCopied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+              <span>{jsonCopied ? 'Copied JSON!' : 'Copy Current Sounding JSON'}</span>
+            </button>
+          </div>
+
+          <div className="bg-black/30 p-3 rounded-lg border border-slate-800">
+            <div className="flex justify-between items-center mb-1">
+              <label className="block text-xs font-mono font-bold uppercase text-slate-400">
+                Paste JSON Sounding Profile or Array of Levels
+              </label>
+              <button
+                onClick={() => {
+                  const samplePayload = {
+                    title: "Plains Severe Convective Profile",
+                    lat: 35.22,
+                    lon: -97.44,
+                    levels: [
+                      { p: 1000, h: 220, t: 33.0, td: 23.5, wd: 200, ws: 22 },
+                      { p: 950, h: 670, t: 29.0, td: 21.5, wd: 225, ws: 40 },
+                      { p: 900, h: 1140, t: 25.0, td: 18.5, wd: 255, ws: 52 },
+                      { p: 850, h: 1520, t: 21.5, td: 13.0, wd: 270, ws: 58 },
+                      { p: 700, h: 3080, t: 10.2, td: -9.0, wd: 290, ws: 72 },
+                      { p: 500, h: 5610, t: -10.8, td: -32.0, wd: 300, ws: 90 },
+                      { p: 300, h: 9140, t: -37.5, td: -52.0, wd: 290, ws: 100 },
+                      { p: 200, h: 11780, t: -56.0, td: -68.0, wd: 280, ws: 95 }
+                    ]
+                  };
+                  setRawJsonInput(JSON.stringify(samplePayload, null, 2));
+                }}
+                className="text-[11px] font-mono text-orange-400 hover:text-orange-300 underline"
+              >
+                Load Sample JSON Template
+              </button>
+            </div>
+            <textarea
+              id="textarea-json-input"
+              rows={6}
+              value={rawJsonInput}
+              onChange={(e) => setRawJsonInput(e.target.value)}
+              placeholder='Paste JSON here, e.g. { "title": "...", "levels": [ { "p": 1000, "t": 30, "td": 22, "h": 200, "ws": 15, "wd": 180 }, ... ] } or array [ ... ]'
+              className="w-full p-3 bg-black/60 border border-slate-700 rounded-lg font-mono text-xs text-orange-300 focus:outline-none focus:border-orange-500"
+            />
+          </div>
+
+          <div className="flex gap-3">
+            <button
+              id="btn-parse-json-text"
+              onClick={() => handleParseJson(rawJsonInput)}
+              disabled={!rawJsonInput.trim()}
+              className="flex-1 py-2.5 bg-orange-600 hover:bg-orange-500 text-white font-mono font-bold uppercase tracking-widest rounded-lg shadow-lg flex items-center justify-center gap-2 transition disabled:opacity-50 text-xs"
+            >
+              <Code2 className="w-4 h-4" />
+              Import & Load JSON Sounding
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Tab 4: Preloaded Real-World Benchmark Soundings */}
       {activeTab === 'presets' && (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <div className="p-3.5 bg-black/30 border border-slate-800 rounded-lg flex flex-col justify-between">

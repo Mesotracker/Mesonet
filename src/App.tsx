@@ -95,15 +95,15 @@ export default function App() {
     dcape: indices.dcape,
     lapse: indices.lapse_700_500,
     meanWind: indices.meanWind_0_6km,
-    temp: Math.round(activeSounding.levels[0]?.t * 1.8 + 32) || 75,
-    dew: Math.round(activeSounding.levels[0]?.td * 1.8 + 32) || 65,
+    temp: activeSounding?.levels?.[0]?.t != null ? Math.round(activeSounding.levels[0].t * 1.8 + 32) : 75,
+    dew: activeSounding?.levels?.[0]?.td != null ? Math.round(activeSounding.levels[0].td * 1.8 + 32) : 65,
     t500: -15,
     time: 17
   });
 
   // Sync inputs whenever active sounding changes
   useEffect(() => {
-    if (activeSounding && activeSounding.levels.length > 0) {
+    if (activeSounding && activeSounding.levels && activeSounding.levels.length > 0) {
       const sfc = activeSounding.levels[0];
       const l500 = activeSounding.levels.find((l) => l.p <= 505) || activeSounding.levels[activeSounding.levels.length - 1];
       setInputs({
@@ -119,9 +119,9 @@ export default function App() {
         dcape: indices.dcape,
         lapse: indices.lapse_700_500,
         meanWind: indices.meanWind_0_6km,
-        temp: Math.round(sfc.t * 1.8 + 32),
-        dew: Math.round(sfc.td * 1.8 + 32),
-        t500: Math.round(l500.t * 1.8 + 32),
+        temp: sfc ? Math.round(sfc.t * 1.8 + 32) : 75,
+        dew: sfc ? Math.round(sfc.td * 1.8 + 32) : 65,
+        t500: l500 ? Math.round(l500.t * 1.8 + 32) : -15,
         time: 17
       });
     }

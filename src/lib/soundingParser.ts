@@ -401,6 +401,116 @@ DVN - Davenport IA Progressive Derecho High Wind Outbreak
 %END%`;
 
 /**
+ * Parses JSON sounding format (supports full SoundingData, exported objects, or array of levels).
+ */
+export function parseJsonSounding(
+  jsonInput: string | any,
+  customTitle?: string
+): SoundingData {
+  let parsedObj: any;
+  if (typeof jsonInput === 'string') {
+    try {
+      parsedObj = JSON.parse(jsonInput);
+    } catch (e: any) {
+      throw new Error(`Invalid JSON syntax: ${e.message}`);
+    }
+  } else {
+    parsedObj = jsonInput;
+  }
+
+  if (!parsedObj) {
+    throw new Error('Empty JSON provided.');
+  }
+
+  // Extract root soundings or levels array
+  let rawLevels: any[] = [];
+  let title = customTitle || 'Imported JSON Sounding';
+  let lat: number | undefined;
+  let lon: number | undefined;
+
+  if (Array.isArray(parsedObj)) {
+    rawLevels = parsedObj;
+  } else if (parsedObj.sounding && typeof parsedObj.sounding === 'object') {
+    if (parsedObj.sounding.title) title = parsedObj.sounding.title;
+    lat = parsedObj.sounding.lat;
+    lon = parsedObj.sounding.lon;
+    rawLevels = parsedObj.sounding.levels || [];
+  } else if (Array.isArray(parsedObj.levels)) {
+    rawLevels = parsedObj.levels;
+    if (parsedObj.title) title = parsedObj.title;
+    lat = parsedObj.lat;
+    lon = parsedObj.lon;
+  } else {
+    throw new Error('Invalid JSON sounding structure: could not locate "levels" array or level objects.');
+  }
+
+  if (!Array.isArray(rawLevels) || rawLevels.length < 3) {
+    throw new Error(`Invalid JSON Sounding: Found ${rawLevels?.length || 0} levels. At least 3 atmospheric levels are required.`);
+  }
+
+  const levels: SoundingLevel[] = [];
+  for (let i = 0; i < rawLevels.length; i++) {
+    const item = rawLevels[i];
+    const p = parseFloat(item.p ?? item.pressure ?? item.press ?? item.level);
+    const t = parseFloat(item.t ?? item.temp ?? item.temperature);
+    let td = parseFloat(item.td ?? item.dewpoint ?? item.dwpt ?? item.dew);
+    const h = parseFloat(item.h ?? item.height ?? item.hght ?? (1000 - p) * 10);
+    const ws = parseFloat(item.ws ?? item.windSpeed ?? item.wspd ?? item.speed ?? 0);
+    const wd = parseFloat(item.wd ?? item.windDir ?? item.wdir ?? item.direction ?? 0);
+
+    if (isNaN(p) || isNaN(t)) continue;
+
+    if (isNaN(td) || td < -100) {
+      td = t - 30;
+    }
+    if (td > t) td = t;
+
+    const safeWd = isNaN(wd) ? 0 : wd;
+    const safeWs = isNaN(ws) ? 0 : ws;
+    const uv = windToUV(safeWs, safeWd);
+
+    levels.push({
+      p: Math.round(p * 10) / 10,
+      h: Math.round(isNaN(h) ? 0 : h),
+      t: Math.round(t * 100) / 100,
+      td: Math.round(td * 100) / 100,
+      wd: Math.round(safeWd * 10) / 10,
+      ws: Math.round(safeWs * 10) / 10,
+      u: uv.u,
+      v: uv.v
+    });
+  }
+
+  if (levels.length < 3) {
+    throw new Error('Invalid JSON Sounding: Could not parse at least 3 valid levels with pressure and temperature.');
+  }
+
+  // Sort descending by pressure (surface first)
+  levels.sort((a, b) => b.p - a.p);
+
+  const indices = computeAllSoundingIndices(levels);
+  const compositeScore =
+    (indices.mlcape / 1000.0) * (indices.shear_0_6km / 30.0) +
+    indices.srh_0_1km / 100.0 +
+    indices.stp * 5.0;
+
+  return {
+    id: `json-${Date.now()}`,
+    name: title.split('\n')[0].substring(0, 40),
+    title,
+    source: 'sharppy',
+    type: 2, // Type 2 imported custom priority
+    lat,
+    lon,
+    rawText: JSON.stringify({ title, lat, lon, levels }, null, 2),
+    levels,
+    indices,
+    compositeScore: Math.round(compositeScore * 10) / 10,
+    selectionReason: 'Primary imported Type 2 sounding (JSON profile / state format).'
+  };
+}
+
+/**
  * Sounding Selector logic:
  * Multiple soundings may exist simultaneously.
  * Priority:

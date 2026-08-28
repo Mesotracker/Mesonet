@@ -1,6 +1,15 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react';
 import { SoundingLevel, LapseRateTuning } from '../types';
-import { calcVaporPressure, calcMixingRatio, calcMoistAdiabaticLapseRate, calcLCL } from '../lib/metMath';
+import {
+  calcVaporPressure,
+  calcMixingRatio,
+  calcMoistAdiabaticLapseRate,
+  calcLCL,
+  Rd,
+  Cp,
+  Lv,
+  EPSILON
+} from '../lib/metMath';
 import { ZoomIn, ZoomOut, RotateCcw, Crosshair, Move, Edit3 } from 'lucide-react';
 
 interface SkewTCanvasProps {
@@ -148,7 +157,8 @@ export const SkewTCanvas: React.FC<SkewTCanvasProps> = ({
       ctx.beginPath();
       let tC = thetaW;
       let started = false;
-      for (let p = pBottom; p >= pTop; p -= 20) {
+      const dp = 15;
+      for (let p = pBottom; p >= pTop; p -= dp) {
         const y = getSkewY(p, h);
         const x = getSkewX(tC, y, w, h);
         if (!started) {
@@ -157,9 +167,14 @@ export const SkewTCanvas: React.FC<SkewTCanvasProps> = ({
         } else {
           ctx.lineTo(x, y);
         }
-        const lapse = calcMoistAdiabaticLapseRate(tC, p, tuning);
-        // Approx 20mb pressure step ~ 180m height
-        tC -= (lapse / 1000.0) * 180;
+        const tk = Math.max(180, tC + 273.15);
+        const es = calcVaporPressure(tC);
+        const rs = calcMixingRatio(es, p);
+        const num = Rd * tk + Lv * rs;
+        const den = p * (Cp + (Math.pow(Lv, 2) * rs * EPSILON) / (Rd * Math.pow(tk, 2)));
+        const factor = tuning.moistLapseFactor !== undefined ? tuning.moistLapseFactor : 1.0;
+        const dT = (num / den) * dp * factor;
+        tC -= dT;
       }
       ctx.stroke();
     }
@@ -169,21 +184,31 @@ export const SkewTCanvas: React.FC<SkewTCanvasProps> = ({
       const sfc = levels[0];
       const lcl = calcLCL(sfc.t, sfc.td, sfc.p);
 
-      // Compute parcel ascent curve
+      // Compute parcel ascent curve in pressure coordinates
       const parcelPoints: { p: number; t: number; x: number; y: number }[] = [];
       let curParcelT = sfc.t;
-      for (let p = sfc.p; p >= pTop; p -= 10) {
+      const dp = 5; // 5 hPa fine step
+      for (let p = sfc.p; p >= pTop; p -= dp) {
         const y = getSkewY(p, h);
         const x = getSkewX(curParcelT, y, w, h);
         parcelPoints.push({ p, t: curParcelT, x, y });
 
         if (p > lcl.lclPressureHpa) {
-          // Dry lapse
-          curParcelT -= (tuning.dryLapseRate / 1000.0) * 85;
+          // Dry adiabatic lapse rate in pressure coordinates
+          const tk = curParcelT + 273.15;
+          const dryRate = (tuning.dryLapseRate || 9.8) / 9.8;
+          const dT = (0.2854 * (tk / p)) * dp * dryRate;
+          curParcelT -= dT;
         } else {
-          // Moist lapse
-          const moistLapse = calcMoistAdiabaticLapseRate(curParcelT, p, tuning);
-          curParcelT -= (moistLapse / 1000.0) * 85;
+          // Moist pseudo-adiabatic lapse rate in pressure coordinates
+          const tk = Math.max(180, curParcelT + 273.15);
+          const es = calcVaporPressure(curParcelT);
+          const rs = calcMixingRatio(es, p);
+          const num = Rd * tk + Lv * rs;
+          const den = p * (Cp + (Math.pow(Lv, 2) * rs * EPSILON) / (Rd * Math.pow(tk, 2)));
+          const factor = tuning.moistLapseFactor !== undefined ? tuning.moistLapseFactor : 1.0;
+          const dT = (num / den) * dp * factor;
+          curParcelT -= dT;
         }
       }
 
@@ -198,7 +223,7 @@ export const SkewTCanvas: React.FC<SkewTCanvasProps> = ({
         const getEnvT = (pTarget: number) => {
           for (let j = 0; j < levels.length - 1; j++) {
             if (pTarget <= levels[j].p && pTarget >= levels[j + 1].p) {
-              const f = (levels[j].p - pTarget) / Math.max(1, levels[j].p - levels[j + 1].p);
+              const f = (levels[j].p - pTarget) / Math.max(0.01, levels[j].p - levels[j + 1].p);
               return levels[j].t + f * (levels[j + 1].t - levels[j].t);
             }
           }
@@ -241,12 +266,18 @@ export const SkewTCanvas: React.FC<SkewTCanvasProps> = ({
       ctx.setLineDash([4 / view.scale, 4 / view.scale]);
       ctx.beginPath();
       let lapseT = sfc.t;
-      for (let p = sfc.p; p >= 300; p -= 25) {
+      const lapseDp = 20;
+      for (let p = sfc.p; p >= 300; p -= lapseDp) {
         const y = getSkewY(p, h);
         const x = getSkewX(lapseT, y, w, h);
         if (p === sfc.p) ctx.moveTo(x, y);
         else ctx.lineTo(x, y);
-        lapseT -= (tuning.dryLapseRate / 1000.0) * 220 * (tuning.midLevelWeight ?? 1.0);
+        const tk = lapseT + 273.15;
+        const dryRate = (tuning.dryLapseRate || 9.8) / 9.8;
+        const midWeight = tuning.midLevelWeight || 1.0;
+        const weight = p < 700 ? midWeight : 1.0;
+        const dT = (0.2854 * (tk / p)) * lapseDp * dryRate * weight;
+        lapseT -= dT;
       }
       ctx.stroke();
       ctx.setLineDash([]); // reset dash
@@ -330,21 +361,36 @@ export const SkewTCanvas: React.FC<SkewTCanvasProps> = ({
     renderCanvas();
   }, [renderCanvas]);
 
-  // Handle Resize
+  // Handle Resize using ResizeObserver for responsive rendering
   useEffect(() => {
-    const handleResize = () => {
+    const updateDimensions = () => {
       if (containerRef.current && canvasRef.current) {
         const rect = containerRef.current.getBoundingClientRect();
-        const size = Math.floor(Math.min(rect.width, 1000));
-        canvasRef.current.width = size;
-        canvasRef.current.height = size;
+        const clientWidth = rect.width > 0 ? rect.width : 500;
+        const size = Math.max(300, Math.floor(Math.min(clientWidth, 1000)));
+        if (canvasRef.current.width !== size || canvasRef.current.height !== size) {
+          canvasRef.current.width = size;
+          canvasRef.current.height = size;
+        }
         renderCanvas();
       }
     };
 
-    handleResize();
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
+    updateDimensions();
+
+    let resizeObserver: ResizeObserver | null = null;
+    if (containerRef.current && typeof ResizeObserver !== 'undefined') {
+      resizeObserver = new ResizeObserver(() => {
+        updateDimensions();
+      });
+      resizeObserver.observe(containerRef.current);
+    }
+
+    window.addEventListener('resize', updateDimensions);
+    return () => {
+      if (resizeObserver) resizeObserver.disconnect();
+      window.removeEventListener('resize', updateDimensions);
+    };
   }, [renderCanvas]);
 
   // Mouse / Touch Event Handlers
