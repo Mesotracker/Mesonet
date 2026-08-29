@@ -214,14 +214,14 @@ export function runMesoMaxRiskEngine(env: MesoMaxInputs): HazardRiskAssessment {
     0,
     (env.cape / 1500.0) *
       ((2000.0 - env.lcl) / 1000.0) *
-      (env.srh / 150.0) *
+      (env.esrh / 150.0) *
       (env.shear / 40.0) *
       ((200.0 + env.cin) / 150.0)
   );
 
   const scp = Math.max(
     0,
-    (env.cape / 1000.0) * (env.srh / 50.0) * Math.min(env.shear / 40.0, 1.5)
+    (env.cape / 1000.0) * (env.esrh / 50.0) * Math.min(env.shear / 40.0, 1.5)
   );
 
   // Dewpoint to mixing ratio approx
