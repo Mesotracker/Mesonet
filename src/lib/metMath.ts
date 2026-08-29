@@ -618,10 +618,10 @@ export function computeAllSoundingIndices(levels: SoundingLevel[], tuning?: Laps
   const srhTerm = esrh / 150.0;
   const shearTerm = shear6 / 40.0;
   const cinTerm = (200.0 + thermo.mlcin) / 150.0;
-  const stp = Math.max(0, capeTerm * lclTerm * srhTerm * shearTerm * cinTerm);
+  const stp = Math.max(-1, capeTerm * lclTerm * srhTerm * shearTerm * cinTerm);
 
   // Supercell Composite Parameter (SCP)
-  const scp = Math.max(0, (thermo.mucape / 1000.0) * (esrh / 50.0) * Math.min(shear6 / 40.0, 1.5));
+  const scp = Math.max(-1, (thermo.mucape / 1000.0) * (esrh / 50.0) * Math.min(shear6 / 40.0, 1.5));
 
   // Significant Hail Parameter (SHIP)
   const vapor_p = calcVaporPressure(dew_sfc_c);
